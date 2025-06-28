@@ -1,20 +1,24 @@
 from flask import Flask, request, jsonify
-import requests
 import os
-import uuid
 import psycopg2
 from psycopg2.extras import RealDictCursor
+import requests
+import google.generativeai as genai
 from dotenv import load_dotenv
 
 load_dotenv()
 app = Flask(__name__)
 
-# Hugging Face model URL for Mixtral
-MODEL_URL = "https://api-inference.huggingface.co/models/mistralai/Mixtral-8x7B-Instruct-v0.1"
-HF_API_KEY = os.getenv("HF_API_KEY")
-headers = {"Authorization": f"Bearer {HF_API_KEY}"}
+# Gemini setup (Client-style)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+client = genai.Client(api_key=GEMINI_API_KEY)
 
-# PostgreSQL connection
+# Mixtral (Hugging Face fallback)
+HF_API_KEY = os.getenv("HF_API_KEY")
+MODEL_URL = "https://api-inference.huggingface.co/models/mistralai/Mixtral-8x7B-Instruct-v0.1"
+hf_headers = {"Authorization": f"Bearer {HF_API_KEY}"}
+
+# PostgreSQL (Neon)
 PG_CONN_STRING = os.getenv("POSTGRES_URL")
 
 def get_db_connection():
@@ -40,7 +44,6 @@ def get_chat_history(session_id, limit=6):
             """, (session_id, limit))
             return list(reversed(cur.fetchall()))
 
-# Format prompt for Mixtral-style chat
 def build_prompt(history):
     prompt = ""
     for entry in history:
@@ -50,7 +53,7 @@ def build_prompt(history):
 
 @app.route("/")
 def home():
-    return jsonify({"status": "Chatbot backend is live."})
+    return jsonify({"status": "Chatbot backend is live with Gemini Client + Mixtral fallback."})
 
 @app.route("/chat", methods=["POST"])
 def chat():
@@ -64,13 +67,26 @@ def chat():
         if not session_id:
             return jsonify({"error": "session_id is required"}), 400
 
-        # Save user message
+        # Save user message to memory
         save_message(session_id, "user", prompt)
 
-        # Build prompt context from memory
+        # Get chat history and build context
         history = get_chat_history(session_id)
         context = build_prompt(history)
 
+        # Try Gemini 1.5 Flash via client
+        try:
+            gemini_response = client.models.generate_content(
+                model="models/gemini-1.5-flash",
+                contents=context
+            )
+            reply = gemini_response.text.strip()
+            save_message(session_id, "assistant", reply)
+            return jsonify({"response": reply})
+        except Exception as gemini_error:
+            print("Gemini failed:", str(gemini_error))
+
+        # Fallback to Mixtral
         payload = {
             "inputs": context,
             "parameters": {
@@ -86,22 +102,17 @@ def chat():
             }
         }
 
-        response = requests.post(MODEL_URL, headers=headers, json=payload)
-
+        response = requests.post(MODEL_URL, headers=hf_headers, json=payload)
         if response.status_code == 200:
-            generated = response.json()
-            assistant_reply = generated[0]["generated_text"].strip()
-
-            save_message(session_id, "assistant", assistant_reply)
-
-            return jsonify({
-                "response": assistant_reply
-            })
+            mixtral_output = response.json()
+            fallback_reply = mixtral_output[0]["generated_text"].strip()
+            save_message(session_id, "assistant", fallback_reply)
+            return jsonify({"response": fallback_reply})
         else:
-            return jsonify({"error": response.text}), response.status_code
+            return jsonify({"error": "Both Gemini and Mixtral failed."}), 500
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception as ex:
+        return jsonify({"error": str(ex)}), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
