@@ -11,7 +11,8 @@ app = Flask(__name__)
 
 # Gemini setup (Client-style)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-client = genai.Client(api_key=GEMINI_API_KEY)
+genai.configure(api_key=GEMINI_API_KEY)
+gemini_model = genai.GenerativeModel("models/gemini-1.5-flash")
 
 # Mixtral (Hugging Face fallback)
 HF_API_KEY = os.getenv("HF_API_KEY")
@@ -76,10 +77,7 @@ def chat():
 
         # Try Gemini 1.5 Flash via client
         try:
-            gemini_response = client.models.generate_content(
-                model="models/gemini-1.5-flash",
-                contents=context
-            )
+            gemini_response = gemini_model.generate_content(context)
             reply = gemini_response.text.strip()
             save_message(session_id, "assistant", reply)
             return jsonify({"response": reply})
