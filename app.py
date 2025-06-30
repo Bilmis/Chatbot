@@ -5,10 +5,11 @@ from psycopg2.extras import RealDictCursor
 import requests
 import google.generativeai as genai
 from dotenv import load_dotenv
+from flask_cors import CORS
 
 load_dotenv()
 app = Flask(__name__)
-
+CORS(app)
 # Gemini setup (Client-style)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 genai.configure(api_key=GEMINI_API_KEY)
